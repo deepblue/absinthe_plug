@@ -23,7 +23,7 @@ defmodule Absinthe.Plug.GraphiQL do
   @behaviour Plug
 
   import Plug.Conn
-  import Absinthe.Plug, only: [prepare: 3, setup_pipeline: 3, load_body_and_params: 1]
+  import Absinthe.Plug, only: [prepare: 4, setup_pipeline: 3, load_body_and_params: 1]
 
   @type opts :: [
     schema: atom,
@@ -63,7 +63,7 @@ defmodule Absinthe.Plug.GraphiQL do
   defp do_call(conn, %{json_codec: _, interface: interface} = config) do
     {conn, body} = load_body_and_params(conn)
 
-    with {:ok, input, opts} <- prepare(conn, body, config),
+    with {:ok, input, opts} <- prepare(conn, conn.params, body, config),
     pipeline <- setup_pipeline(conn, config, opts),
     {:ok, result, _} <- Absinthe.Pipeline.run(input, pipeline) do
       {:ok, result, opts[:variables], input}

@@ -28,7 +28,7 @@ defmodule Absinthe.Plug do
   def init(opts) do
     adapter = Keyword.get(opts, :adapter)
     context = Keyword.get(opts, :context, %{})
-    
+
     no_query_message = Keyword.get(opts, :no_query_message, "No query document supplied")
 
     pipeline = Keyword.get(opts, :pipeline, {__MODULE__, :default_pipeline})
@@ -75,6 +75,10 @@ defmodule Absinthe.Plug do
         conn
         |> json(400, result, json_codec)
 
+      {:ok, result} when is_list(result) ->
+        conn
+        |> json(200, result, json_codec)
+
       {:error, {:http_method, text}, _} ->
         conn
         |> send_resp(405, text)
@@ -90,14 +94,21 @@ defmodule Absinthe.Plug do
   def execute(conn, config)do
     {conn, body} = load_body_and_params(conn)
 
-    result = with {:ok, input, opts} <- prepare(conn, body, config),
+    result = case batched_request(conn) do
+      nil -> execute_pipeline(conn, conn.params, body, config)
+      batch -> execute_batch(conn, batch, body, config)
+    end
+
+    {conn, result}
+  end
+
+  def execute_pipeline(conn, params, body, config) do
+    with {:ok, input, opts} <- prepare(conn, params, body, config),
     {:ok, input} <- validate_input(input, config.no_query_message),
     pipeline <- setup_pipeline(conn, config, opts),
     {:ok, absinthe_result, _} <- Absinthe.Pipeline.run(input, pipeline) do
       {:ok, absinthe_result}
     end
-
-    {conn, result}
   end
 
   def setup_pipeline(conn, config, opts) do
@@ -118,16 +129,16 @@ defmodule Absinthe.Plug do
   end
 
   @doc false
-  def prepare(conn, body, %{json_codec: json_codec} = config) do
-    raw_input = Map.get(conn.params, "query", body)
+  def prepare(conn, params, body, %{json_codec: json_codec} = config) do
+    raw_input = Map.get(params, "query", body)
 
     Logger.debug("""
     GraphQL Document:
     #{raw_input}
     """)
 
-    variables = Map.get(conn.params, "variables") || "{}"
-    operation_name = conn.params["operationName"] |> decode_operation_name
+    variables = Map.get(params, "variables") || "{}"
+    operation_name = params["operationName"] |> decode_operation_name
 
     with {:ok, variables} <- decode_variables(variables, json_codec) do
         absinthe_opts = [
@@ -180,4 +191,16 @@ defmodule Absinthe.Plug do
     |> send_resp(status, json_codec.module.encode!(body, json_codec.opts))
   end
 
+  def batched_request(%{params: %{"_json" => batch}}) when is_list(batch), do: batch
+  def batched_request(_), do: nil
+
+  def execute_batch(conn, batch, body, config) do
+    ret = batch
+    |> Enum.map(fn(params) ->
+        {_ok, ret} = execute_pipeline(conn, params, body, config)
+        ret
+      end)
+
+    {:ok, ret}
+  end
 end
